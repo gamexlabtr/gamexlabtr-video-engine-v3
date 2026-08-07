@@ -76,8 +76,8 @@ jobs:
       - name: Install npm packages
         run: npm install
 
-      - name: Install Chromium
-        run: npx playwright install --with-deps chromium
+     - name: Install Chromium
+  run: npx playwright install chromium
 
       - name: Verify FFmpeg
         run: ffmpeg -version
