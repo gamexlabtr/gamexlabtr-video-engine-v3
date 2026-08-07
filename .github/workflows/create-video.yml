@@ -8,31 +8,37 @@ on:
         required: false
         default: ""
         type: string
+
       game_embed_url:
         description: "Opsiyonel manuel embed/iframe URL"
         required: false
         default: ""
         type: string
+
       game_title:
         description: "Opsiyonel manuel oyun adı"
         required: false
         default: ""
         type: string
+
       category:
         description: "Opsiyonel manuel kategori"
         required: false
         default: ""
         type: string
+
       provider:
         description: "Opsiyonel manuel sağlayıcı"
         required: false
         default: ""
         type: string
+
       record_seconds:
         description: "Oynanış kayıt süresi (8-60)"
         required: true
         default: "30"
         type: string
+
       make_webhook:
         description: "Opsiyonel Make webhook URL (tercihen Secret kullan)"
         required: false
@@ -48,7 +54,7 @@ concurrency:
 
 jobs:
   create-video:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
 
     env:
@@ -76,8 +82,8 @@ jobs:
       - name: Install npm packages
         run: npm install
 
-     - name: Install Chromium
-  run: npx playwright install chromium
+      - name: Install Chromium
+        run: npx playwright install chromium
 
       - name: Verify FFmpeg
         run: ffmpeg -version
