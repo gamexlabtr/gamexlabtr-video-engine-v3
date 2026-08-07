@@ -96,10 +96,93 @@ async function looksPlayable(page) {
 
 async function startAcrossFrames(page) {
   const scopes = [page, ...page.frames().filter(f => f !== page.mainFrame())];
+
+  const buttonSelectors = [
+    'button:has-text("Play")',
+    'button:has-text("PLAY")',
+    'button:has-text("Oyna")',
+    'button:has-text("Start")',
+    'button:has-text("START")',
+    '[aria-label*="play" i]',
+    '[class*="play-button" i]',
+    '[id*="play-button" i]',
+    '[class*="start" i]',
+    '[id*="start" i]'
+  ];
+
   for (const scope of scopes) {
-    const hit = await clickFirstVisible(scope, START_SELECTORS);
-    if (hit) return hit;
+    for (const selector of buttonSelectors) {
+      try {
+        const el = scope.locator(selector).first();
+
+        if (await el.isVisible({ timeout: 1200 })) {
+          console.log(`Trying start control: ${selector}`);
+
+          await el.scrollIntoViewIfNeeded().catch(() => {});
+          await el.hover().catch(() => {});
+          await el.click({ force: true, timeout: 5000 });
+
+          await sleep(1800);
+
+          // Some games require a second real user gesture.
+          await page.keyboard.press('Enter').catch(() => {});
+          await page.keyboard.press('Space').catch(() => {});
+
+          await sleep(1200);
+
+          return {
+            type: 'button',
+            selector,
+            scope
+          };
+        }
+      } catch (_) {}
+    }
+
+    // Some HTML/canvas games draw the START button inside the canvas.
+    try {
+      const canvas = scope.locator('canvas').first();
+
+      if (await canvas.isVisible({ timeout: 1200 })) {
+        await canvas.scrollIntoViewIfNeeded().catch(() => {});
+        const box = await canvas.boundingBox();
+
+        if (box && box.width > 120 && box.height > 120) {
+          console.log('Canvas game detected; trying multiple start positions.');
+
+          const points = [
+            [0.50, 0.50],
+            [0.50, 0.60],
+            [0.50, 0.70],
+            [0.50, 0.40],
+            [0.50, 0.80]
+          ];
+
+          for (const [rx, ry] of points) {
+            const x = box.x + box.width * rx;
+            const y = box.y + box.height * ry;
+
+            await page.mouse.move(x, y, { steps: 4 }).catch(() => {});
+            await page.mouse.down().catch(() => {});
+            await sleep(120);
+            await page.mouse.up().catch(() => {});
+            await sleep(900);
+          }
+
+          await page.keyboard.press('Enter').catch(() => {});
+          await page.keyboard.press('Space').catch(() => {});
+
+          return {
+            type: 'canvas',
+            selector: 'canvas',
+            scope,
+            box
+          };
+        }
+      }
+    } catch (_) {}
   }
+
   return null;
 }
 
@@ -219,10 +302,28 @@ async function navigateWithFallback(page) {
     console.log(`Capture target ready: ${finalTarget}`);
     if (!(await looksPlayable(page))) console.warn('Playable surface was not confidently detected; continuing with interaction fallback.');
 
-    const startSelector = await startAcrossFrames(page);
-    console.log(startSelector ? `Start interaction: ${startSelector}` : 'No explicit Play/Start control found; continuing.');
-    await sleep(2500);
-    const surface = await focusGameSurface(page);
+    const startResult = await startAcrossFrames(page);
+
+    if (startResult) {
+      console.log(`Start interaction completed: ${startResult.selector}`);
+    } else {
+      console.log('No explicit Start control detected; trying generic start gestures.');
+
+      await page.keyboard.press('Enter').catch(() => {});
+      await page.keyboard.press('Space').catch(() => {});
+      await page.mouse.click(360, 560).catch(() => {});
+      await page.mouse.click(360, 640).catch(() => {});
+      await page.mouse.click(360, 760).catch(() => {});
+    }
+
+    // Allow provider loaders / game engines to transition after START.
+    await sleep(5000);
+
+    const surface =
+      startResult && startResult.box
+        ? startResult.box
+        : await focusGameSurface(page);
+
     console.log(`Recording ${RECORD_SECONDS}s gameplay...`);
     await genericGameplay(page, RECORD_SECONDS * 1000, surface);
     await safeCover(page);
