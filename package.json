@@ -1,8 +1,8 @@
 {
   "name": "gamexlabtr-video-engine",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "private": true,
-  "description": "GamexlabTR Video Engine v5: provider profiles, ad-safe capture, gameplay verification, quality gate, automatic candidate fallback, TR+EN social automation and analytics.",
+  "description": "GamexlabTR Video Engine v5.1: provider QA, two attempts per game, up to ten candidates per run, automatic fallback, TR+EN social automation and analytics.",
   "type": "commonjs",
   "scripts": {
     "capture": "node src/capture.js",

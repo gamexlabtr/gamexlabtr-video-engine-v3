@@ -49,7 +49,7 @@ concurrency:
 jobs:
   create-video:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     env:
       INPUT_GAME_URL: ${{ inputs.game_url }}
@@ -59,7 +59,8 @@ jobs:
       INPUT_GAME_PROVIDER: ${{ inputs.provider }}
       RECORD_SECONDS: ${{ inputs.record_seconds }}
       AUTO_SELECTION_MODE: newest
-      MAX_CANDIDATES_PER_RUN: "3"
+      MAX_CANDIDATES_PER_RUN: "10"
+      MAX_ATTEMPTS_PER_GAME: "2"
       GXL_SITE_URL: ${{ secrets.GXL_SITE_URL }}
       GXL_VIDEO_API_TOKEN: ${{ secrets.GXL_VIDEO_API_TOKEN }}
       MAKE_WEBHOOK: ${{ inputs.make_webhook || secrets.MAKE_WEBHOOK }}

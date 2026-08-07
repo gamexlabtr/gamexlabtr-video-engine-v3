@@ -55,7 +55,7 @@ function exportSelection(data) {
     headers: {
       'Content-Type': 'application/json',
       'X-GXL-Video-Token': token,
-      'User-Agent': 'GamexlabTR-Video-Engine/5.0',
+      'User-Agent': 'GamexlabTR-Video-Engine/5.1',
     },
     body: JSON.stringify({ mode: process.env.AUTO_SELECTION_MODE || 'newest' }),
   });

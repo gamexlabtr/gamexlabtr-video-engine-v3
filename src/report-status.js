@@ -26,9 +26,9 @@ const path = require('path');
     headers: {
       'Content-Type': 'application/json',
       'X-GXL-Video-Token': token,
-      'User-Agent': 'GamexlabTR-Video-Engine/5.0',
+      'User-Agent': 'GamexlabTR-Video-Engine/5.1',
     },
-    body: JSON.stringify({ queue_id: Number(queueId), lock_token: lockToken, error }),
+    body: JSON.stringify({ queue_id: Number(queueId), lock_token: lockToken, error, local_attempts: Math.max(1, Number(process.env.LOCAL_ATTEMPTS || 1)) }),
   });
   const text = await response.text();
   if (!response.ok) throw new Error(`Status API ${response.status}: ${text.slice(0, 500)}`);
