@@ -2,6 +2,8 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { detectProviderProfile, gameplayPattern } = require('./provider-profiles');
+const { appendAnalytics } = require('./analytics-log');
 
 const GAME_URL = (process.env.GAME_URL || '').trim();
 const GAME_EMBED_URL = (process.env.GAME_EMBED_URL || '').trim();
@@ -10,6 +12,8 @@ const GAME_CATEGORY = process.env.GAME_CATEGORY || 'Games';
 const GAME_PROVIDER = (process.env.GAME_PROVIDER || 'other').toLowerCase();
 const rawSeconds = Number(process.env.RECORD_SECONDS || 30);
 const RECORD_SECONDS = Math.max(8, Math.min(60, Number.isFinite(rawSeconds) ? rawSeconds : 30));
+const PROVIDER_PROFILE = detectProviderProfile(GAME_PROVIDER, GAME_EMBED_URL, GAME_URL);
+const GAMEPLAY_PATTERN = gameplayPattern(GAME_CATEGORY);
 
 if (!GAME_URL && !GAME_EMBED_URL) {
   console.error('GAME_URL or GAME_EMBED_URL is required.');
@@ -99,12 +103,13 @@ const SAFE_AD_DISMISS_SELECTORS = [
   '[aria-label="Skip"]', '[aria-label="Close Ad"]',
   '[aria-label="Close advertisement"]'
 ];
-const START_SELECTORS = [
+const START_SELECTORS = [...new Set([
+  ...(PROVIDER_PROFILE.startSelectors || []),
   'button:has-text("Play")', 'button:has-text("PLAY")', 'button:has-text("Oyna")',
   'button:has-text("Start")', 'button:has-text("START")', '[aria-label*="play" i]',
   '[class*="play-button" i]', '[id*="play-button" i]',
   '[class*="start-button" i]', '[id*="start-button" i]'
-];
+])];
 
 async function clickFirstVisible(scope, selectors, timeout = 900) {
   for (const selector of selectors) {
@@ -151,7 +156,7 @@ async function visibleAdSignal(page) {
   for (const scope of scopes) {
     try {
       const text = (await scope.locator('body').innerText({ timeout: 450 })).slice(0, 3000).toLowerCase();
-      if (/advertisement|skip ad|close ad|ad will close|sponsored|rewarded ad|your ad will end|reklam/.test(text)) return true;
+      if (PROVIDER_PROFILE.adText.test(text) || /advertisement|skip ad|close ad|ad will close|sponsored|rewarded ad|your ad will end|reklam/.test(text)) return true;
     } catch (_) {}
   }
   return false;
@@ -266,7 +271,7 @@ async function startAcrossFrames(page) {
   if (surface?.box) {
     const b = surface.box;
     console.log(`No DOM start button; trying safe central ${surface.type} gestures.`);
-    for (const [rx, ry] of [[0.5,0.5],[0.5,0.62],[0.5,0.72]]) {
+    for (const [rx, ry] of (PROVIDER_PROFILE.safeStartPoints || [[0.5,0.5],[0.5,0.62],[0.5,0.72]])) {
       const x = b.x + b.width * rx, y = b.y + b.height * ry;
       await page.mouse.move(x, y, { steps: 4 }).catch(() => {});
       await page.mouse.click(x, y).catch(() => {});
@@ -280,7 +285,7 @@ async function startAcrossFrames(page) {
 }
 
 async function waitForRealGameplay(context, page, captureTarget) {
-  const deadline = Date.now() + 65000;
+  const deadline = Date.now() + (PROVIDER_PROFILE.gameplayReadyTimeoutMs || 75000);
   let attempts = 0;
   let lastSurface = null;
 
@@ -300,7 +305,7 @@ async function waitForRealGameplay(context, page, captureTarget) {
     if (startVisible || attempts === 0 || attempts % 4 === 0) {
       await startAcrossFrames(page);
       attempts++;
-      await sleep(1500);
+      await sleep(Math.min(2600, Math.max(1400, (PROVIDER_PROFILE.postStartWaitMs || 4500) / 2)));
     }
 
     const surface = await bestGameSurface(page);
@@ -338,7 +343,7 @@ async function navigateDirectGame(page) {
         waitUntil: 'domcontentloaded', timeout: 90000,
         referer: GAME_URL || 'https://gamexlabtr.com/'
       });
-      await sleep(6500);
+      await sleep(PROVIDER_PROFILE.initialWaitMs || 7000);
       await dismissOverlays(page);
       if (isTrustedGameUrl(page.url())) return page.url();
     } catch (error) {
@@ -349,7 +354,7 @@ async function navigateDirectGame(page) {
   if (!GAME_URL) throw new Error('No usable game page for embed discovery.');
   console.log(`Opening GamexlabTR page only to discover live game iframe: ${GAME_URL}`);
   await page.goto(GAME_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
-  await sleep(5500);
+  await sleep(Math.max(4500, (PROVIDER_PROFILE.initialWaitMs || 7000) - 1500));
   await dismissOverlays(page);
 
   const discovered = await discoverEmbedUrl(page);
@@ -357,10 +362,52 @@ async function navigateDirectGame(page) {
 
   console.log(`Discovered game target: ${discovered}`);
   await page.goto(discovered, { waitUntil: 'domcontentloaded', timeout: 90000, referer: GAME_URL });
-  await sleep(6500);
+  await sleep(PROVIDER_PROFILE.initialWaitMs || 7000);
   await dismissOverlays(page);
   if (!isTrustedGameUrl(page.url())) throw new Error(`Discovered target redirected outside trusted game provider: ${page.url()}`);
   return page.url();
+}
+
+async function performGameplayAction(page, surface, step) {
+  const b = surface;
+  const marginX = Math.min(b.width * 0.20, 110);
+  const marginY = Math.min(b.height * 0.20, 150);
+  const randomPoint = () => ({
+    x: b.x + marginX + Math.random() * Math.max(50, b.width - marginX * 2),
+    y: b.y + marginY + Math.random() * Math.max(50, b.height - marginY * 2)
+  });
+
+  const pattern = GAMEPLAY_PATTERN;
+  if (pattern === 'racing') {
+    const key = ['ArrowUp','ArrowRight','ArrowUp','ArrowLeft'][step % 4];
+    await page.keyboard.down(key); await sleep(360); await page.keyboard.up(key);
+    if (step % 6 === 0) await page.keyboard.press('Space').catch(() => {});
+    return;
+  }
+  if (pattern === 'action') {
+    const key = ['ArrowRight','Space','ArrowUp','ArrowLeft','KeyD','KeyW'][step % 6];
+    await page.keyboard.down(key); await sleep(260); await page.keyboard.up(key);
+    const p = randomPoint(); await page.mouse.move(p.x,p.y,{steps:4});
+    if (step % 3 === 0) await page.mouse.click(p.x,p.y);
+    return;
+  }
+  if (pattern === 'puzzle') {
+    const p1 = randomPoint(), p2 = randomPoint();
+    await page.mouse.move(p1.x,p1.y,{steps:4}); await page.mouse.down();
+    await page.mouse.move(p2.x,p2.y,{steps:8}); await page.mouse.up();
+    return;
+  }
+  if (pattern === 'sports') {
+    const p = randomPoint(); await page.mouse.move(p.x,p.y,{steps:5}); await page.mouse.click(p.x,p.y);
+    if (step % 4 === 0) await page.keyboard.press('Space').catch(() => {});
+    return;
+  }
+
+  const key = keys[step % keys.length];
+  await page.keyboard.down(key); await sleep(220); await page.keyboard.up(key);
+  const p = randomPoint();
+  await page.mouse.move(p.x, p.y, { steps: 4 });
+  if (step % 4 === 0) await page.mouse.click(p.x, p.y);
 }
 
 async function genericGameplay(context, page, durationMs, surface, captureTarget, rawStartMs) {
@@ -369,7 +416,6 @@ async function genericGameplay(context, page, durationMs, surface, captureTarget
   let cleanAccumulated = 0;
   let lastTick = Date.now();
   const hardDeadline = Date.now() + durationMs + 90000;
-  const keys = ['ArrowRight','ArrowUp','Space','ArrowLeft','ArrowDown','KeyD','KeyW','KeyA'];
   let i = 0;
 
   const closeSegment = now => {
@@ -407,15 +453,7 @@ async function genericGameplay(context, page, durationMs, surface, captureTarget
     cleanAccumulated += delta;
 
     try {
-      const key = keys[i % keys.length];
-      await page.keyboard.down(key); await sleep(220); await page.keyboard.up(key);
-
-      const marginX = Math.min(surface.width * 0.18, 100);
-      const marginY = Math.min(surface.height * 0.18, 140);
-      const x = surface.x + marginX + Math.random() * Math.max(50, surface.width - marginX * 2);
-      const y = surface.y + marginY + Math.random() * Math.max(50, surface.height - marginY * 2);
-      await page.mouse.move(x, y, { steps: 4 });
-      if (i % 4 === 0) await page.mouse.click(x, y);
+      await performGameplayAction(page, surface, i);
     } catch (_) {}
 
     i++;
@@ -454,7 +492,7 @@ async function safeCover(page, surface) {
     const context = await browser.newContext({
       viewport: { width: 720, height: 1280 },
       recordVideo: { dir: rawDir, size: { width: 720, height: 1280 } },
-      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136 Safari/537.36 GamexlabTRVideo/4.0'
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136 Safari/537.36 GamexlabTRVideo/5.0'
     });
     const page = await context.newPage();
     const rawVideoTimelineStart = Date.now();
@@ -471,7 +509,8 @@ async function safeCover(page, surface) {
     });
 
     const captureTarget = await navigateDirectGame(page);
-    console.log(`v4 capture target ready: ${captureTarget}`);
+    console.log(`v5 capture target ready: ${captureTarget}`);
+    console.log(`Provider profile: ${PROVIDER_PROFILE.key}; gameplay pattern: ${GAMEPLAY_PATTERN}`);
 
     const surface = await waitForRealGameplay(context, page, captureTarget);
     const gameplayStartOffsetSeconds = Math.max(0, (Date.now() - rawVideoTimelineStart) / 1000 - 0.35);
@@ -491,7 +530,9 @@ async function safeCover(page, surface) {
     fs.copyFileSync(rawVideoPath, path.join(outputDir, 'gameplay.webm'));
 
     fs.writeFileSync(path.join(outputDir, 'metadata.json'), JSON.stringify({
-      engineVersion: '4.0.0',
+      engineVersion: '5.0.0',
+      providerProfile: PROVIDER_PROFILE.key,
+      gameplayPattern: GAMEPLAY_PATTERN,
       postId: process.env.GAME_POST_ID || null,
       queueId: process.env.GAME_QUEUE_ID || null,
       gameUrl: GAME_URL,
@@ -506,9 +547,11 @@ async function safeCover(page, surface) {
       verifiedCleanGameplaySeconds: gameplay.totalCleanSeconds,
       createdAt: new Date().toISOString()
     }, null, 2));
-    console.log('v4 capture completed successfully.');
+    appendAnalytics({ event: 'capture_complete', provider: GAME_PROVIDER, profile: PROVIDER_PROFILE.key, category: GAME_CATEGORY, pattern: GAMEPLAY_PATTERN, gameTitle: GAME_TITLE, cleanSeconds: gameplay.totalCleanSeconds, segments: gameplay.cleanSegments.length, result: 'PASS' });
+    console.log('v5 capture completed successfully.');
   } catch (error) {
     fs.writeFileSync(path.join(outputDir, 'capture-error.txt'), String(error?.stack || error));
+    appendAnalytics({ event: 'capture_failed', provider: GAME_PROVIDER, profile: PROVIDER_PROFILE.key, category: GAME_CATEGORY, pattern: GAMEPLAY_PATTERN, gameTitle: GAME_TITLE, result: 'FAIL', error: String(error?.message || error).slice(0,500) });
     console.error('Capture failed:', error);
     process.exitCode = 1;
   } finally {

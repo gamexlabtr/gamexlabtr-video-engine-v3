@@ -101,6 +101,9 @@ jobs:
             output/metadata.json
             output/social.json
             output/selection.json
+            output/quality.json
+            output/analytics/latest.json
+            output/analytics/video-engine.jsonl
           if-no-files-found: error
           retention-days: 7
 

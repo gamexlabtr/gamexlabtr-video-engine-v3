@@ -1,8 +1,8 @@
 {
   "name": "gamexlabtr-video-engine",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "private": true,
-  "description": "GamexlabTR v4: direct embed capture, ad/redirect isolation, verified gameplay readiness, clean-segment rendering, TR+EN social automation.",
+  "description": "GamexlabTR Video Engine v5: provider profiles, ad-safe capture, gameplay verification, quality gate, automatic candidate fallback, TR+EN social automation and analytics.",
   "type": "commonjs",
   "scripts": {
     "capture": "node src/capture.js",

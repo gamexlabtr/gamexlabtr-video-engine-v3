@@ -26,7 +26,7 @@ const path = require('path');
     headers: {
       'Content-Type': 'application/json',
       'X-GXL-Video-Token': token,
-      'User-Agent': 'GamexlabTR-Video-Engine/3.0',
+      'User-Agent': 'GamexlabTR-Video-Engine/5.0',
     },
     body: JSON.stringify({ queue_id: Number(queueId), lock_token: lockToken, error }),
   });

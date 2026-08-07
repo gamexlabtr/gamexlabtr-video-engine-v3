@@ -11,7 +11,7 @@ for ((i=1; i<=MAX_CANDIDATES; i++)); do
   echo "===== Video candidate ${i}/${MAX_CANDIDATES} ====="
   rm -f output/selection.json output/gameplay.webm output/gameplay-vertical.mp4 \
         output/gamexlabtr-final.mp4 output/cover.png output/metadata.json \
-        output/social.json output/capture-error.txt output/intro.mp4 output/outro.mp4 output/concat.txt
+        output/social.json output/quality.json output/capture-error.txt output/intro.mp4 output/outro.mp4 output/concat.txt
 
   if ! npm run select; then
     echo "Game selection failed."
