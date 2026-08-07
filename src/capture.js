@@ -38,6 +38,169 @@ function providerScore(url) {
   return score;
 }
 
+
+function hostOf(value) {
+  try { return new URL(value).hostname.toLowerCase().replace(/^www\./, ''); } catch { return ''; }
+}
+
+function baseDomain(host) {
+  const parts = String(host || '').split('.').filter(Boolean);
+  return parts.length >= 2 ? parts.slice(-2).join('.') : String(host || '');
+}
+
+function isTrustedGameUrl(value) {
+  if (!isHttpUrl(value)) return false;
+  const host = hostOf(value);
+  if (!host) return false;
+
+  const knownHosts = [hostOf(GAME_EMBED_URL), hostOf(GAME_URL)].filter(Boolean);
+  for (const known of knownHosts) {
+    if (host === known || host.endsWith(`.${known}`) || known.endsWith(`.${host}`)) return true;
+    const a = baseDomain(host), b = baseDomain(known);
+    if (a && b && a === b) return true;
+  }
+
+  const lower = String(value).toLowerCase();
+  return PROVIDER_HINTS.some(hint => lower.includes(hint));
+}
+
+async function closeUnexpectedPages(context, keepPage) {
+  for (const p of context.pages()) {
+    if (p === keepPage) continue;
+    try {
+      console.log(`Closing popup/new tab: ${p.url() || 'about:blank'}`);
+      await p.close({ runBeforeUnload: false });
+    } catch (_) {}
+  }
+}
+
+async function recoverTrustedTarget(page, targetUrl) {
+  const current = page.url();
+  if (current === 'about:blank' || isTrustedGameUrl(current)) return true;
+
+  console.warn(`Unexpected redirect blocked/recovered: ${current}`);
+  try {
+    await page.goto(targetUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 90000,
+      referer: GAME_URL || 'https://gamexlabtr.com/'
+    });
+    await sleep(4500);
+    return true;
+  } catch (error) {
+    console.warn(`Could not recover game target: ${error.message}`);
+    return false;
+  }
+}
+
+const SAFE_AD_DISMISS_SELECTORS = [
+  'button:has-text("Skip Ad")',
+  'button:has-text("Skip")',
+  'button:has-text("Close Ad")',
+  'button:has-text("Continue to game")',
+  'button:has-text("Continue")',
+  '[aria-label="Skip Ad"]',
+  '[aria-label="Skip"]',
+  '[aria-label="Close Ad"]',
+  '[aria-label="Close advertisement"]'
+];
+
+async function dismissSafeAdControls(page) {
+  const scopes = [page, ...page.frames().filter(f => f !== page.mainFrame())];
+  for (const scope of scopes) {
+    for (const selector of SAFE_AD_DISMISS_SELECTORS) {
+      try {
+        const el = scope.locator(selector).first();
+        if (await el.isVisible({ timeout: 350 })) {
+          console.log(`Using safe ad control: ${selector}`);
+          await el.click({ force: true, timeout: 2500 });
+          await sleep(1200);
+          return true;
+        }
+      } catch (_) {}
+    }
+  }
+  return false;
+}
+
+async function visibleAdSignal(page) {
+  const scopes = [page, ...page.frames().filter(f => f !== page.mainFrame())];
+  for (const scope of scopes) {
+    try {
+      const text = (await scope.locator('body').innerText({ timeout: 500 })).slice(0, 2500).toLowerCase();
+      if (/advertisement|skip ad|ad will close|sponsored|rewarded ad|your ad will end|reklam/.test(text)) return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
+async function bestGameSurface(page) {
+  const candidates = [];
+  const scopes = [page, ...page.frames().filter(f => f !== page.mainFrame())];
+
+  for (const scope of scopes) {
+    try {
+      const canvases = scope.locator('canvas');
+      const count = Math.min(await canvases.count(), 4);
+      for (let i = 0; i < count; i++) {
+        const el = canvases.nth(i);
+        if (!(await el.isVisible({ timeout: 250 }).catch(() => false))) continue;
+        const box = await el.boundingBox().catch(() => null);
+        if (!box || box.width < 120 || box.height < 120) continue;
+        candidates.push({ box, score: 500 + box.width * box.height / 10000, type: 'canvas' });
+      }
+    } catch (_) {}
+  }
+
+  try {
+    const iframes = page.locator('iframe');
+    const count = Math.min(await iframes.count(), 12);
+    for (let i = 0; i < count; i++) {
+      const el = iframes.nth(i);
+      if (!(await el.isVisible({ timeout: 250 }).catch(() => false))) continue;
+      const box = await el.boundingBox().catch(() => null);
+      if (!box || box.width < 180 || box.height < 180) continue;
+      const src = await el.getAttribute('src').catch(() => '') || '';
+      const score = providerScore(src) * 20 + box.width * box.height / 10000;
+      candidates.push({ box, score, type: 'iframe', src });
+    }
+  } catch (_) {}
+
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0] || null;
+}
+
+async function waitForGameplayReady(context, page, captureTarget) {
+  const deadline = Date.now() + 45000;
+  let stableSince = 0;
+  let lastSurface = null;
+
+  while (Date.now() < deadline) {
+    await closeUnexpectedPages(context, page);
+    await recoverTrustedTarget(page, captureTarget);
+    await dismissSafeAdControls(page);
+
+    const adVisible = await visibleAdSignal(page);
+    const surface = await bestGameSurface(page);
+
+    if (!adVisible && surface && isTrustedGameUrl(page.url())) {
+      if (!stableSince) stableSince = Date.now();
+      lastSurface = surface;
+      if (Date.now() - stableSince >= 3500) {
+        console.log(`Gameplay surface ready (${surface.type}); starting clean capture window.`);
+        return surface.box;
+      }
+    } else {
+      stableSince = 0;
+    }
+
+    await sleep(1500);
+  }
+
+  console.warn('Gameplay readiness timeout reached; using best available game surface.');
+  return lastSurface?.box || (await bestGameSurface(page))?.box || null;
+}
+
 async function clickFirstVisible(scope, selectors) {
   for (const selector of selectors) {
     try {
@@ -187,46 +350,60 @@ async function startAcrossFrames(page) {
 }
 
 async function focusGameSurface(page) {
-  try {
-    const canvas = page.locator('canvas').first();
-    if (await canvas.isVisible({ timeout: 1000 })) {
-      await canvas.scrollIntoViewIfNeeded();
-      const box = await canvas.boundingBox();
-      if (box) {
-        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-        return box;
-      }
-    }
-  } catch (_) {}
-  try {
-    const iframe = page.locator('iframe').first();
-    if (await iframe.isVisible({ timeout: 1000 })) {
-      await iframe.scrollIntoViewIfNeeded();
-      const box = await iframe.boundingBox();
-      if (box) {
-        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-        return box;
-      }
-    }
-  } catch (_) {}
+  const surface = await bestGameSurface(page);
+  if (surface?.box) {
+    const box = surface.box;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
+    return box;
+  }
   return { x: 0, y: 0, width: 720, height: 1280 };
 }
 
-async function genericGameplay(page, durationMs, surface) {
+async function genericGameplay(context, page, durationMs, surface, captureTarget) {
   const end = Date.now() + durationMs;
   const keys = ['ArrowRight', 'ArrowUp', 'Space', 'ArrowLeft', 'ArrowDown', 'KeyD', 'KeyW', 'KeyA'];
   let i = 0;
+
   while (Date.now() < end) {
+    await closeUnexpectedPages(context, page);
+
+    if (!isTrustedGameUrl(page.url())) {
+      await recoverTrustedTarget(page, captureTarget);
+      const recovered = await waitForGameplayReady(context, page, captureTarget);
+      if (recovered) surface = recovered;
+    }
+
+    // If an ad appears mid-session, wait it out instead of clicking it.
+    if (await visibleAdSignal(page)) {
+      await dismissSafeAdControls(page);
+      await sleep(1300);
+      continue;
+    }
+
     const key = keys[i % keys.length];
     try {
-      await page.keyboard.down(key); await sleep(260); await page.keyboard.up(key);
-      const x = Math.max(10, surface.x + 40 + Math.random() * Math.max(80, surface.width - 80));
-      const y = Math.max(10, surface.y + 40 + Math.random() * Math.max(80, surface.height - 80));
+      await page.keyboard.down(key);
+      await sleep(240);
+      await page.keyboard.up(key);
+
+      // Keep pointer activity inside the central 70% of the detected game
+      // surface. This greatly reduces accidental ad/banner clicks.
+      const marginX = Math.min(surface.width * 0.15, 100);
+      const marginY = Math.min(surface.height * 0.15, 140);
+      const usableW = Math.max(60, surface.width - marginX * 2);
+      const usableH = Math.max(60, surface.height - marginY * 2);
+      const x = surface.x + marginX + Math.random() * usableW;
+      const y = surface.y + marginY + Math.random() * usableH;
+
       await page.mouse.move(x, y, { steps: 4 });
-      await page.mouse.click(x, y);
+
+      // Do not click on every loop. Keyboard/mouse movement is enough for
+      // many games and fewer clicks means fewer accidental ad activations.
+      if (i % 3 === 0) await page.mouse.click(x, y);
     } catch (_) {}
+
     i += 1;
-    await sleep(420);
+    await sleep(430);
   }
 }
 
@@ -295,8 +472,20 @@ async function navigateWithFallback(page) {
       userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136 Safari/537.36 GamexlabTRVideo/3.0'
     });
     const page = await context.newPage();
+    const rawVideoTimelineStart = Date.now();
     page.setDefaultTimeout(30000);
     page.setDefaultNavigationTimeout(90000);
+
+    // Provider ads frequently open new tabs. Keep the recording page alive
+    // and automatically close everything else.
+    context.on('page', async popup => {
+      if (popup === page) return;
+      try {
+        await popup.waitForLoadState('domcontentloaded', { timeout: 2500 }).catch(() => {});
+        console.log(`Popup blocked: ${popup.url() || 'about:blank'}`);
+        await popup.close({ runBeforeUnload: false });
+      } catch (_) {}
+    });
 
     const finalTarget = await navigateWithFallback(page);
     console.log(`Capture target ready: ${finalTarget}`);
@@ -316,16 +505,23 @@ async function navigateWithFallback(page) {
       await page.mouse.click(360, 760).catch(() => {});
     }
 
-    // Allow provider loaders / game engines to transition after START.
-    await sleep(5000);
+    // Ads/loaders are allowed to finish in the raw Playwright recording.
+    // The exact clean-gameplay timestamp is saved below and render.sh trims
+    // everything before it from the final social video.
+    await sleep(2500);
+    await closeUnexpectedPages(context, page);
+    await recoverTrustedTarget(page, finalTarget);
 
-    const surface =
-      startResult && startResult.box
-        ? startResult.box
-        : await focusGameSurface(page);
+    const readySurface = await waitForGameplayReady(context, page, finalTarget);
+    const surface = readySurface || (startResult && startResult.box) || await focusGameSurface(page);
+
+    // Keep a tiny safety lead-in so the rendered clip does not begin on a
+    // hard transition frame.
+    const gameplayStartOffsetSeconds = Math.max(0, (Date.now() - rawVideoTimelineStart) / 1000 - 0.75);
+    console.log(`Clean gameplay starts at raw video +${gameplayStartOffsetSeconds.toFixed(2)}s`);
 
     console.log(`Recording ${RECORD_SECONDS}s gameplay...`);
-    await genericGameplay(page, RECORD_SECONDS * 1000, surface);
+    await genericGameplay(context, page, RECORD_SECONDS * 1000, surface, finalTarget);
     await safeCover(page);
 
     const video = page.video();
@@ -345,6 +541,8 @@ async function navigateWithFallback(page) {
       category: GAME_CATEGORY,
       provider: GAME_PROVIDER,
       recordSeconds: RECORD_SECONDS,
+      gameplayStartOffsetSeconds: Number(gameplayStartOffsetSeconds.toFixed(3)),
+      adTrimApplied: true,
       createdAt: new Date().toISOString()
     }, null, 2));
     console.log('Capture completed successfully.');

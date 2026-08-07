@@ -9,7 +9,16 @@ FONT_REGULAR="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 [[ -f output/gameplay.webm ]] || { echo "output/gameplay.webm bulunamadi."; exit 1; }
 
-# drawtext escaping for the dynamic title.
+# capture.js records from browser startup because Playwright's recordVideo API
+# cannot be started later. Read the clean gameplay timestamp and trim all
+# provider ads/loaders before it.
+TRIM_START="0"
+if [[ -s output/metadata.json ]]; then
+  TRIM_START="$(node -e "try{const d=require('./output/metadata.json'); const n=Number(d.gameplayStartOffsetSeconds||0); process.stdout.write(Number.isFinite(n)?String(Math.max(0,n)):'0')}catch(e){process.stdout.write('0')}")"
+fi
+
+echo "Rendering clean gameplay from raw +${TRIM_START}s for ${DURATION}s"
+
 SAFE_TITLE="${TITLE//\\/\\\\}"
 SAFE_TITLE="${SAFE_TITLE//:/\\:}"
 SAFE_TITLE="${SAFE_TITLE//\'/\\\'}"
@@ -19,7 +28,9 @@ ffmpeg -y -f lavfi -i color=c=0x071426:s=1080x1920:d=1.3:r=30 \
 drawtext=fontfile=${FONT_REGULAR}:text='YENİ OYUN / NEW GAME':fontcolor=0x6EA8FF:fontsize=44:x=(w-text_w)/2:y=875" \
   -an -c:v libx264 -pix_fmt yuv420p -r 30 output/intro.mp4
 
-ffmpeg -y -i output/gameplay.webm -t "${DURATION}" \
+# -ss before -i performs an efficient seek. The precise timestamp comes from
+# capture.js after ad/popup handling and gameplay readiness checks.
+ffmpeg -y -ss "${TRIM_START}" -i output/gameplay.webm -t "${DURATION}" \
   -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,\
 drawbox=x=0:y=0:w=iw:h=170:color=black@0.50:t=fill,\
 drawtext=fontfile=${FONT_BOLD}:text='${SAFE_TITLE}':fontcolor=white:fontsize=48:x=50:y=55,\
@@ -39,7 +50,5 @@ printf "file '%s'\nfile '%s'\nfile '%s'\n" \
 ffmpeg -y -f concat -safe 0 -i output/concat.txt \
   -c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p -movflags +faststart output/gamexlabtr-final.mp4
 
-# If Playwright cover failed, derive a reliable cover from the rendered video.
-if [[ ! -s output/cover.png ]]; then
-  ffmpeg -y -ss 2 -i output/gamexlabtr-final.mp4 -frames:v 1 output/cover.png
-fi
+# Derive the cover from CLEAN gameplay rather than from an ad screen.
+ffmpeg -y -ss 2 -i output/gameplay-vertical.mp4 -frames:v 1 output/cover.png

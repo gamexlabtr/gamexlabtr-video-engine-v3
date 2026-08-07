@@ -64,3 +64,13 @@ Oyun seçimini Make değil WordPress Video Queue yapar.
 ## Önemli
 
 Video motoru paylaşım metinlerini ve dosyayı hazırlar. Facebook/Instagram/YouTube/TikTok'a gerçek yükleme için ilgili platform bağlantısı/izinleri Make tarafında ayrıca tanımlanmalıdır; repo gizli erişim anahtarlarını kendi içine gömmez.
+
+
+## v3.1.1 Ad-safe capture
+
+- Blocks/recovers unexpected ad redirects and closes popup tabs.
+- Gameplay clicks are constrained to the detected game surface.
+- Safe Skip/Close controls are used when detected; ad content itself is not clicked.
+- `capture.js` stores `gameplayStartOffsetSeconds` in `output/metadata.json`.
+- `render.sh` automatically trims provider ads/loaders before composing the final vertical video.
+- Video validation samples the clean gameplay window after the trim point.

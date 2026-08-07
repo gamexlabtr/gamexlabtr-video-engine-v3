@@ -8,17 +8,24 @@ if (!fs.existsSync(file)) {
   process.exit(1);
 }
 
-// Decode tiny RGB samples across the clip. This catches the exact failure mode
-// we saw earlier: a recording that technically exists but is almost entirely
-// white/black because the provider iframe never rendered.
+let trimStart = 0;
+try {
+  const metadata = JSON.parse(fs.readFileSync(path.resolve('output/metadata.json'), 'utf8'));
+  const n = Number(metadata.gameplayStartOffsetSeconds || 0);
+  if (Number.isFinite(n) && n > 0) trimStart = n;
+} catch (_) {}
+
+// Validate the CLEAN gameplay window, not the provider-ad/loading section.
 const args = [
-  '-v', 'error', '-i', file,
+  '-v', 'error',
+  '-ss', String(trimStart),
+  '-i', file,
   '-vf', 'fps=1/4,scale=64:64',
   '-frames:v', '12', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'
 ];
 const out = spawnSync('ffmpeg', args, { encoding: null, maxBuffer: 16 * 1024 * 1024 });
 if (out.status !== 0 || !out.stdout || out.stdout.length < 64 * 64 * 3) {
-  console.error('Video validation failed: FFmpeg could not decode sample frames.');
+  console.error('Video validation failed: FFmpeg could not decode clean gameplay sample frames.');
   if (out.stderr) console.error(out.stderr.toString().slice(0, 1000));
   process.exit(1);
 }
@@ -50,13 +57,13 @@ for (let f = 0; f < frames; f++) {
 }
 
 const blankRatio = blankFrames / frames;
-console.log(`Video validation: frames=${frames}, blank=${blankFrames}, blankRatio=${blankRatio.toFixed(2)}, movement=${meanMovement.toFixed(1)}`);
+console.log(`Clean gameplay validation: start=${trimStart.toFixed(2)}s frames=${frames}, blank=${blankFrames}, blankRatio=${blankRatio.toFixed(2)}, movement=${meanMovement.toFixed(1)}`);
 if (frames >= 3 && blankRatio >= 0.75) {
-  console.error('Video rejected: recording is mostly blank/white/black.');
+  console.error('Video rejected: clean gameplay window is mostly blank/white/black.');
   process.exit(1);
 }
 if (dynamicFrames === 0) {
-  console.error('Video rejected: no usable visual frame detected.');
+  console.error('Video rejected: no usable visual frame detected after ad trim.');
   process.exit(1);
 }
-console.log('Video validation passed.');
+console.log('Clean gameplay validation passed.');
