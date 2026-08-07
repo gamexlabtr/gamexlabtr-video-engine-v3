@@ -1,0 +1,40 @@
+{
+  "name": "gamexlabtr-video-studio",
+  "version": "2.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "gamexlabtr-video-studio",
+      "version": "2.0.0",
+      "dependencies": {
+        "playwright": "1.44.1"
+      }
+    },
+    "node_modules/playwright": {
+      "version": "1.44.1",
+      "resolved": "https://registry.npmjs.org/playwright/-/playwright-1.44.1.tgz",
+      "integrity": "sha512-PLACEHOLDER",
+      "dependencies": {
+        "playwright-core": "1.44.1"
+      },
+      "bin": {
+        "playwright": "cli.js"
+      },
+      "engines": {
+        "node": ">=16"
+      }
+    },
+    "node_modules/playwright-core": {
+      "version": "1.44.1",
+      "resolved": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.44.1.tgz",
+      "integrity": "sha512-PLACEHOLDER",
+      "bin": {
+        "playwright-core": "cli.js"
+      },
+      "engines": {
+        "node": ">=16"
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "gamexlabtr-video-engine",
+  "version": "3.1.0",
+  "private": true,
+  "description": "GamexlabTR tam otomatik oyun seçimi, sağlayıcı/embed çözümleme, blank-video doğrulama ve TR+EN sosyal paket motoru.",
+  "type": "commonjs",
+  "scripts": {
+    "capture": "node src/capture.js",
+    "render": "bash scripts/render.sh",
+    "social": "node src/social.js",
+    "build:video": "npm run select && npm run capture && npm run render && npm run social",
+    "select": "node src/select-game.js",
+    "report": "node src/report-status.js",
+    "validate": "node src/validate-video.js",
+    "notify": "node src/notify.js"
+  },
+  "dependencies": {
+    "playwright": "1.44.1"
+  }
+}

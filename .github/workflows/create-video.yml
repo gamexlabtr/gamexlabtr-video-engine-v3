@@ -1,0 +1,104 @@
+name: Create Game Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_url:
+        description: "Opsiyonel manuel test URL'si (normalde boş bırak)"
+        required: false
+        default: ""
+        type: string
+      game_embed_url:
+        description: "Opsiyonel manuel embed/iframe URL"
+        required: false
+        default: ""
+        type: string
+      game_title:
+        description: "Opsiyonel manuel oyun adı"
+        required: false
+        default: ""
+        type: string
+      category:
+        description: "Opsiyonel manuel kategori"
+        required: false
+        default: ""
+        type: string
+      provider:
+        description: "Opsiyonel manuel sağlayıcı"
+        required: false
+        default: ""
+        type: string
+      record_seconds:
+        description: "Oynanış kayıt süresi (8-60)"
+        required: true
+        default: "30"
+        type: string
+      make_webhook:
+        description: "Opsiyonel Make webhook URL (tercihen Secret kullan)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gamexlabtr-video-engine
+  cancel-in-progress: false
+
+jobs:
+  create-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      INPUT_GAME_URL: ${{ inputs.game_url }}
+      INPUT_GAME_EMBED_URL: ${{ inputs.game_embed_url }}
+      INPUT_GAME_TITLE: ${{ inputs.game_title }}
+      INPUT_GAME_CATEGORY: ${{ inputs.category }}
+      INPUT_GAME_PROVIDER: ${{ inputs.provider }}
+      RECORD_SECONDS: ${{ inputs.record_seconds }}
+      AUTO_SELECTION_MODE: newest
+      MAX_CANDIDATES_PER_RUN: "3"
+      GXL_SITE_URL: ${{ secrets.GXL_SITE_URL }}
+      GXL_VIDEO_API_TOKEN: ${{ secrets.GXL_VIDEO_API_TOKEN }}
+      MAKE_WEBHOOK: ${{ inputs.make_webhook || secrets.MAKE_WEBHOOK }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install npm packages
+        run: npm install
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify FFmpeg
+        run: ffmpeg -version
+
+      - name: Automatic video cycle
+        run: bash scripts/run-cycle.sh
+
+      - name: Upload result
+        if: success() && env.GXL_NO_GAME != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gamexlabtr-video-${{ env.GAME_POST_ID || github.run_number }}
+          path: |
+            output/gamexlabtr-final.mp4
+            output/cover.png
+            output/metadata.json
+            output/social.json
+            output/selection.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Notify Make after artifact is ready
+        if: success() && env.GXL_NO_GAME != '1'
+        run: npm run notify
