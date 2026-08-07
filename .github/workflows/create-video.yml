@@ -40,7 +40,7 @@ on:
         type: string
 
       make_webhook:
-        description: "Opsiyonel Make webhook URL (tercihen Secret kullan)"
+        description: "Opsiyonel Make webhook URL"
         required: false
         default: ""
         type: string
@@ -85,13 +85,13 @@ jobs:
       - name: Install Chromium
         run: npx playwright install chromium
 
-     - name: Install FFmpeg
-  run: |
-    sudo apt-get update
-    sudo apt-get install -y ffmpeg
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
-- name: Verify FFmpeg
-  run: ffmpeg -version
+      - name: Verify FFmpeg
+        run: ffmpeg -version
 
       - name: Automatic video cycle
         run: bash scripts/run-cycle.sh
@@ -100,7 +100,7 @@ jobs:
         if: success() && env.GXL_NO_GAME != '1'
         uses: actions/upload-artifact@v4
         with:
-          name: gamexlabtr-video-${{ env.GAME_POST_ID || github.run_number }}
+          name: gamexlabtr-video-${{ github.run_number }}
           path: |
             output/gamexlabtr-final.mp4
             output/cover.png
