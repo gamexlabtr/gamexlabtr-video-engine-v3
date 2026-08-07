@@ -35,6 +35,17 @@ const AD_HINTS = [
   '/ads/', '/ad/', 'advert', 'sponsor', 'rewarded'
 ];
 
+const LOADING_SELECTORS = [
+  '#unity-loading-bar', '#unity-progress-bar-empty', '#unity-progress-bar-full',
+  '#unity-logo', '.unity-loading-bar', '.unity-progress-bar', '.unity-loader',
+  '[id*="unity-loading" i]', '[class*="unity-loading" i]',
+  '[id*="loading" i]', '[class*="loading" i]',
+  '[id*="loader" i]', '[class*="loader" i]',
+  'progress', '[role="progressbar"]',
+  '#canvas-loader', '.game-loader', '.preloader', '[class*="preloader" i]'
+];
+const LOADING_TEXT = /(^|\b)(loading|loading game|please wait|initializing|preparing|downloading|connecting|starting|yükleniyor|yükleme|bekleyin|hazırlanıyor)(\b|\.{2,}|…)|unity webgl|powered by unity|godot|phaser loading|\b\d{1,3}%\b/i;
+
 function isHttpUrl(value) {
   try { const u = new URL(value); return u.protocol === 'https:' || u.protocol === 'http:'; } catch { return false; }
 }
@@ -157,6 +168,27 @@ async function visibleAdSignal(page) {
     try {
       const text = (await scope.locator('body').innerText({ timeout: 450 })).slice(0, 3000).toLowerCase();
       if (PROVIDER_PROFILE.adText.test(text) || /advertisement|skip ad|close ad|ad will close|sponsored|rewarded ad|your ad will end|reklam/.test(text)) return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
+async function visibleLoadingSignal(page) {
+  const scopes = [page, ...page.frames().filter(f => f !== page.mainFrame())];
+  for (const scope of scopes) {
+    for (const selector of LOADING_SELECTORS) {
+      try {
+        const el = scope.locator(selector).first();
+        if (await el.isVisible({ timeout: 160 })) {
+          const box = await el.boundingBox().catch(() => null);
+          // Ignore tiny decorative spinners; accept meaningful loader UI.
+          if (!box || (box.width >= 36 && box.height >= 18)) return true;
+        }
+      } catch (_) {}
+    }
+    try {
+      const text = (await scope.locator('body').innerText({ timeout: 300 })).slice(0, 5000);
+      if (LOADING_TEXT.test(text)) return true;
     } catch (_) {}
   }
   return false;
@@ -285,9 +317,11 @@ async function startAcrossFrames(page) {
 }
 
 async function waitForRealGameplay(context, page, captureTarget) {
-  const deadline = Date.now() + (PROVIDER_PROFILE.gameplayReadyTimeoutMs || 75000);
+  const deadline = Date.now() + (PROVIDER_PROFILE.gameplayReadyTimeoutMs || 90000);
   let attempts = 0;
   let lastSurface = null;
+  let cleanVotes = 0;
+  let activityVotes = 0;
 
   while (Date.now() < deadline) {
     await closeUnexpectedPages(context, page);
@@ -295,9 +329,19 @@ async function waitForRealGameplay(context, page, captureTarget) {
     await dismissOverlays(page);
 
     if (await visibleAdSignal(page)) {
-      console.log('Advertisement/loading signal detected; waiting for clean game state...');
+      cleanVotes = 0;
+      activityVotes = 0;
+      console.log('Advertisement signal detected; waiting for clean game state...');
       await dismissSafeAdControls(page);
-      await sleep(1600);
+      await sleep(1800);
+      continue;
+    }
+
+    if (await visibleLoadingSignal(page)) {
+      cleanVotes = 0;
+      activityVotes = 0;
+      console.log('Game loader/progress UI is still visible; waiting...');
+      await sleep(1800);
       continue;
     }
 
@@ -305,33 +349,57 @@ async function waitForRealGameplay(context, page, captureTarget) {
     if (startVisible || attempts === 0 || attempts % 4 === 0) {
       await startAcrossFrames(page);
       attempts++;
-      await sleep(Math.min(2600, Math.max(1400, (PROVIDER_PROFILE.postStartWaitMs || 4500) / 2)));
+      cleanVotes = 0;
+      await sleep(Math.max(1800, PROVIDER_PROFILE.postStartWaitMs || 5000));
     }
 
     const surface = await bestGameSurface(page);
     if (!surface) {
-      await sleep(1200);
+      cleanVotes = 0;
+      activityVotes = 0;
+      await sleep(1400);
       continue;
     }
     lastSurface = surface;
 
-    const stillStart = await hasVisibleStartControl(page);
-    if (stillStart) {
+    if (await hasVisibleStartControl(page)) {
+      cleanVotes = 0;
       console.log('START/PLAY is still visible; not accepting as gameplay yet.');
-      await sleep(1200);
+      await sleep(1400);
+      continue;
+    }
+    if (await visibleLoadingSignal(page)) {
+      cleanVotes = 0;
+      activityVotes = 0;
+      console.log('Loading state returned after START; waiting...');
+      await sleep(1600);
       continue;
     }
 
+    // Give the game a harmless input and require repeated visual activity.
+    try { await performGameplayAction(page, surface.box, attempts); } catch (_) {}
+    await sleep(700);
     const activity = await visualActivity(page, surface);
-    console.log(`Gameplay readiness: surface=${surface.type} visual=${activity.unique}/${activity.samples}`);
-    if (activity.active && !(await visibleAdSignal(page)) && isTrustedGameUrl(page.url())) {
-      console.log('Real gameplay accepted.');
+    console.log(`Gameplay readiness: surface=${surface.type} visual=${activity.unique}/${activity.samples} cleanVotes=${cleanVotes} activityVotes=${activityVotes}`);
+
+    if (activity.active) activityVotes++; else activityVotes = 0;
+    cleanVotes++;
+
+    // Require several consecutive clean observations. A small Unity spinner can
+    // change hashes, but it should still be caught by loader UI/text and will
+    // not pass repeated post-input readiness checks as easily.
+    if (cleanVotes >= 3 && activityVotes >= 2 &&
+        !(await visibleAdSignal(page)) &&
+        !(await visibleLoadingSignal(page)) &&
+        !(await hasVisibleStartControl(page)) &&
+        isTrustedGameUrl(page.url())) {
+      console.log('Real gameplay accepted after stable readiness checks.');
       return surface.box;
     }
-    await sleep(1000);
+    await sleep(1200);
   }
 
-  throw new Error(`Real gameplay could not be confirmed within timeout${lastSurface ? ' (surface existed but readiness failed)' : ''}.`);
+  throw new Error(`Real gameplay could not be confirmed within timeout${lastSurface ? ' (surface existed but loading/start/activity checks failed)' : ''}.`);
 }
 
 async function navigateDirectGame(page) {
@@ -370,6 +438,7 @@ async function navigateDirectGame(page) {
 
 async function performGameplayAction(page, surface, step) {
   const b = surface;
+  const keys = ['ArrowRight','ArrowUp','Space','ArrowLeft','ArrowDown','KeyD','KeyW','KeyA'];
   const marginX = Math.min(b.width * 0.20, 110);
   const marginY = Math.min(b.height * 0.20, 150);
   const randomPoint = () => ({
@@ -440,12 +509,13 @@ async function genericGameplay(context, page, durationMs, surface, captureTarget
       continue;
     }
 
-    const dirty = await visibleAdSignal(page) || await hasVisibleStartControl(page);
+    const dirty = await visibleAdSignal(page) || await visibleLoadingSignal(page) || await hasVisibleStartControl(page);
     if (dirty) {
       closeSegment(Date.now());
       await dismissSafeAdControls(page);
       if (await hasVisibleStartControl(page)) await startAcrossFrames(page);
-      await sleep(1200);
+      if (await visibleLoadingSignal(page)) console.log('Loader appeared during capture; pausing clean segment.');
+      await sleep(1400);
       continue;
     }
 
@@ -492,7 +562,7 @@ async function safeCover(page, surface) {
     const context = await browser.newContext({
       viewport: { width: 720, height: 1280 },
       recordVideo: { dir: rawDir, size: { width: 720, height: 1280 } },
-      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136 Safari/537.36 GamexlabTRVideo/5.0'
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136 Safari/537.36 GamexlabTRVideo/5.2'
     });
     const page = await context.newPage();
     const rawVideoTimelineStart = Date.now();
@@ -530,7 +600,7 @@ async function safeCover(page, surface) {
     fs.copyFileSync(rawVideoPath, path.join(outputDir, 'gameplay.webm'));
 
     fs.writeFileSync(path.join(outputDir, 'metadata.json'), JSON.stringify({
-      engineVersion: '5.0.0',
+      engineVersion: '5.2.0',
       providerProfile: PROVIDER_PROFILE.key,
       gameplayPattern: GAMEPLAY_PATTERN,
       postId: process.env.GAME_POST_ID || null,
@@ -548,7 +618,7 @@ async function safeCover(page, surface) {
       createdAt: new Date().toISOString()
     }, null, 2));
     appendAnalytics({ event: 'capture_complete', provider: GAME_PROVIDER, profile: PROVIDER_PROFILE.key, category: GAME_CATEGORY, pattern: GAMEPLAY_PATTERN, gameTitle: GAME_TITLE, cleanSeconds: gameplay.totalCleanSeconds, segments: gameplay.cleanSegments.length, result: 'PASS' });
-    console.log('v5 capture completed successfully.');
+    console.log('v5.2 capture completed successfully.');
   } catch (error) {
     fs.writeFileSync(path.join(outputDir, 'capture-error.txt'), String(error?.stack || error));
     appendAnalytics({ event: 'capture_failed', provider: GAME_PROVIDER, profile: PROVIDER_PROFILE.key, category: GAME_CATEGORY, pattern: GAMEPLAY_PATTERN, gameTitle: GAME_TITLE, result: 'FAIL', error: String(error?.message || error).slice(0,500) });

@@ -8,7 +8,7 @@ const file = path.resolve('output/gameplay-clean.mp4');
 const metricsPath = path.resolve('output/quality.json');
 
 function fail(reason, metrics = {}) {
-  const payload = { engineVersion: '5.0.0', pass: false, reason, ...metrics };
+  const payload = { engineVersion: '5.2.0', pass: false, reason, ...metrics };
   fs.writeFileSync(metricsPath, JSON.stringify(payload, null, 2));
   appendAnalytics({ event: 'quality_check', result: 'FAIL', reason, ...metrics });
   console.error(`Video rejected: ${reason}`);
@@ -32,6 +32,7 @@ const W=80,H=80,frameBytes=W*H*3;
 const frames=Math.floor(out.stdout.length/frameBytes);
 let blank=0, nonBlank=0, colorful=0;
 let temporalDiffSum=0, temporalPairs=0, highMotionPairs=0;
+let changedPixelRatioSum=0, spatialMotionPairs=0;
 let prev=null;
 let luminanceMeans=[];
 
@@ -55,11 +56,18 @@ for(let f=0;f<frames;f++){
   if(sat>0.08) colorful++;
 
   if(prev){
-    let diff=0;
-    for(let i=0;i<gray.length;i++) diff += Math.abs(gray[i]-prev[i]);
+    let diff=0, changed=0;
+    for(let i=0;i<gray.length;i++) {
+      const d=Math.abs(gray[i]-prev[i]);
+      diff += d;
+      if(d>12) changed++;
+    }
     diff/=gray.length;
+    const changedRatio=changed/gray.length;
     temporalDiffSum += diff; temporalPairs++;
+    changedPixelRatioSum += changedRatio;
     if(diff>3.0) highMotionPairs++;
+    if(changedRatio>0.03) spatialMotionPairs++;
   }
   prev=gray;
 }
@@ -68,21 +76,26 @@ const blankRatio=blank/frames;
 const avgTemporalDiff=temporalPairs?temporalDiffSum/temporalPairs:0;
 const motionPairRatio=temporalPairs?highMotionPairs/temporalPairs:0;
 const colorfulRatio=colorful/frames;
+const avgChangedPixelRatio=temporalPairs?changedPixelRatioSum/temporalPairs:0;
+const spatialMotionPairRatio=temporalPairs?spatialMotionPairs/temporalPairs:0;
 const lumMin=Math.min(...luminanceMeans), lumMax=Math.max(...luminanceMeans);
 const lumRange=lumMax-lumMin;
 
-const metrics={ duration, frames, blankRatio, avgTemporalDiff, motionPairRatio, colorfulRatio, lumRange };
-console.log(`v5 quality: duration=${duration.toFixed(1)}s frames=${frames} blank=${blankRatio.toFixed(2)} avgDiff=${avgTemporalDiff.toFixed(2)} motion=${motionPairRatio.toFixed(2)} color=${colorfulRatio.toFixed(2)} lumRange=${lumRange.toFixed(1)}`);
+const metrics={ duration, frames, blankRatio, avgTemporalDiff, motionPairRatio, avgChangedPixelRatio, spatialMotionPairRatio, colorfulRatio, lumRange };
+console.log(`v5.2 quality: duration=${duration.toFixed(1)}s frames=${frames} blank=${blankRatio.toFixed(2)} avgDiff=${avgTemporalDiff.toFixed(2)} motion=${motionPairRatio.toFixed(2)} changed=${avgChangedPixelRatio.toFixed(3)} spatial=${spatialMotionPairRatio.toFixed(2)} color=${colorfulRatio.toFixed(2)} lumRange=${lumRange.toFixed(1)}`);
 
 if(frames < 6) fail('too few sampled frames', metrics);
 if(blankRatio >= 0.45) fail('too much blank/black/white content', metrics);
 if(nonBlank === 0) fail('no non-blank gameplay frames', metrics);
 // Static START/loading pages typically have almost no temporal change.
 if(avgTemporalDiff < 0.8 && motionPairRatio < 0.10) fail('gameplay appears static or stuck on a start/loading screen', metrics);
+// A loader spinner may change a tiny area while the rest of the screen is static.
+// Require motion to affect a meaningful portion of sampled frames/pixels.
+if(avgChangedPixelRatio < 0.010 && spatialMotionPairRatio < 0.12) fail('motion is confined to a tiny area; likely loader/spinner rather than gameplay', metrics);
 // Very low color + low movement is commonly a loader/error page.
 if(colorfulRatio < 0.08 && avgTemporalDiff < 1.5 && lumRange < 16) fail('gameplay resembles a static loader/error surface', metrics);
 
-const payload={ engineVersion:'5.0.0', pass:true, reason:'quality checks passed', ...metrics };
+const payload={ engineVersion:'5.2.0', pass:true, reason:'quality checks passed', ...metrics };
 fs.writeFileSync(metricsPath, JSON.stringify(payload, null, 2));
 appendAnalytics({ event:'quality_check', result:'PASS', ...metrics });
-console.log('v5 quality validation passed.');
+console.log('v5.2 quality validation passed.');

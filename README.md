@@ -1,3 +1,7 @@
+# GamexlabTR Video Engine v5.2.0 — Gameplay Ready Gate
+
+This release focuses on rejecting Unity/loading/start screens before clean gameplay is accepted. It detects common loader/progress UI, requires repeated clean readiness observations after input, pauses clean segments if loading returns, and adds spatial-motion QA so a tiny spinner is not treated as gameplay.
+
 # GamexlabTR Video Engine v5.1.0
 
 GitHub Actions üzerinde çalışan otomatik oyun video motoru.
