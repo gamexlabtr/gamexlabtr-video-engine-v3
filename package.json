@@ -1,8 +1,8 @@
 {
   "name": "gamexlabtr-video-engine",
-  "version": "3.1.0",
+  "version": "4.0.0",
   "private": true,
-  "description": "GamexlabTR tam otomatik oyun seçimi, sağlayıcı/embed çözümleme, blank-video doğrulama ve TR+EN sosyal paket motoru.",
+  "description": "GamexlabTR v4: direct embed capture, ad/redirect isolation, verified gameplay readiness, clean-segment rendering, TR+EN social automation.",
   "type": "commonjs",
   "scripts": {
     "capture": "node src/capture.js",

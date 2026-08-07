@@ -1,3 +1,7 @@
+# GamexlabTR Video Engine v4.0.0
+
+V4 direct game/embed capture engine. It does not accept a visible canvas as gameplay by itself: ads and START/PLAY states are waited out, visual activity is verified, and only clean gameplay segments are rendered into the final social video.
+
 # GamexlabTR Video Engine v3.1 FINAL
 
 Tam otomatik GitHub Actions video motoru. Normal kullanımda oyun URL'si girilmez. WordPress/GamexlabTR Core sıradaki videosu olmayan oyunu seçer; motor gerçek embed/iframe hedefini bulur, oynanışı kaydeder, boş video kontrolü yapar, 1080x1920 MP4 üretir ve TR+EN sosyal medya paketini hazırlar.

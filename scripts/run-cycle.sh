@@ -30,10 +30,10 @@ for ((i=1; i<=MAX_CANDIDATES; i++)); do
   error=""
   if ! npm run capture; then
     error="capture_failed"
-  elif ! npm run validate; then
-    error="blank_or_invalid_video"
   elif ! npm run render; then
     error="render_failed"
+  elif ! npm run validate; then
+    error="blank_or_invalid_video"
   elif ! npm run social; then
     error="social_package_failed"
   fi
