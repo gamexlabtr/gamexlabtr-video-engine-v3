@@ -267,7 +267,85 @@ async function discoverEmbedUrl(page) {
   return unique[0] || '';
 }
 
+async function lockGameIframeToViewport(page, preferredSrc = '') {
+  const iframes = page.locator('iframe');
+  const count = Math.min(await iframes.count(), 20);
+  const candidates = [];
+
+  for (let i = 0; i < count; i++) {
+    try {
+      const el = iframes.nth(i);
+      if (!(await el.isVisible({ timeout: 300 }).catch(() => false))) continue;
+      const src = await el.getAttribute('src').catch(() => '') || '';
+      const lower = src.toLowerCase();
+      if (!src || AD_HINTS.some(h => lower.includes(h)) || NON_GAME_HINTS.some(h => lower.includes(h))) continue;
+      const box = await el.boundingBox().catch(() => null);
+      if (!box || box.width < 200 || box.height < 180) continue;
+
+      let score = providerScore(src) * 100 + box.width * box.height / 1000;
+      if (preferredSrc && (src === preferredSrc || src.includes(preferredSrc) || preferredSrc.includes(src))) score += 100000;
+      candidates.push({ el, src, score });
+    } catch (_) {}
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  if (!best) return null;
+
+  await best.el.scrollIntoViewIfNeeded().catch(() => {});
+  await page.waitForTimeout(300);
+
+  // Pin only the verified game iframe to the recording viewport. This prevents
+  // page scroll, related-games sections and footer from entering the capture.
+  await best.el.evaluate(el => {
+    document.documentElement.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+    document.body.style.margin = '0';
+
+    el.dataset.gxlVideoLocked = '1';
+    Object.assign(el.style, {
+      position: 'fixed',
+      inset: '0',
+      top: '0',
+      left: '0',
+      width: '100vw',
+      height: '100vh',
+      minWidth: '100vw',
+      minHeight: '100vh',
+      maxWidth: 'none',
+      maxHeight: 'none',
+      margin: '0',
+      padding: '0',
+      border: '0',
+      zIndex: '2147483647',
+      display: 'block',
+      visibility: 'visible',
+      opacity: '1',
+      transform: 'none'
+    });
+  });
+
+  await page.waitForTimeout(700);
+  const box = await best.el.boundingBox().catch(() => null);
+  if (!box || box.width < 600 || box.height < 900) {
+    throw new Error('Verified game iframe could not be locked to the recording viewport.');
+  }
+
+  console.log(`Game iframe locked to viewport: ${best.src}`);
+  return { src: best.src, box };
+}
+
+async function ensureLockedGameIframe(page) {
+  const locked = page.locator('iframe[data-gxl-video-locked="1"]').first();
+  if (!(await locked.isVisible({ timeout: 300 }).catch(() => false))) return null;
+  const box = await locked.boundingBox().catch(() => null);
+  if (!box || box.width < 600 || box.height < 900) return null;
+  return { box, type: 'iframe', src: await locked.getAttribute('src').catch(() => '') || '' };
+}
+
 async function bestGameSurface(page) {
+  const locked = await ensureLockedGameIframe(page);
+  if (locked) return locked;
   const candidates = [];
   const scopes = [page, ...page.frames().filter(f => f !== page.mainFrame())];
 
@@ -485,14 +563,18 @@ async function navigateDirectGame(page) {
   await dismissOverlays(page);
 
   const discovered = await discoverEmbedUrl(page);
-  if (discovered) {
-    console.log(`Verified live game iframe candidate: ${discovered}`);
-  } else {
-    console.warn('No external game iframe passed filtering; using visible game surface detection.');
+  if (!discovered) {
+    throw new Error('No verified external game iframe passed filtering.');
   }
 
+  console.log(`Verified live game iframe candidate: ${discovered}`);
+  const locked = await lockGameIframeToViewport(page, discovered);
+  if (!locked) throw new Error('Verified game iframe could not be locked to viewport.');
+
   const surface = await bestGameSurface(page);
-  if (!surface) throw new Error('No usable game surface found on the embedded GamexlabTR page.');
+  if (!surface || surface.type !== 'iframe') {
+    throw new Error('Locked game iframe is not available as the recording surface.');
+  }
 
   return page.url();
 }
@@ -563,6 +645,16 @@ async function genericGameplay(context, page, durationMs, surface, captureTarget
     lastTick = now;
 
     await closeUnexpectedPages(context, page);
+
+    if (PROVIDER_PROFILE.key === 'gamemonetize') {
+      const locked = await ensureLockedGameIframe(page);
+      if (!locked) {
+        closeSegment(Date.now());
+        throw new Error('Locked game iframe disappeared during capture.');
+      }
+      surface = locked.box;
+    }
+
     if (!isTrustedGameUrl(page.url())) {
       closeSegment(Date.now());
       await recoverTrustedTarget(page, captureTarget);
@@ -623,7 +715,7 @@ async function safeCover(page, surface) {
     const context = await browser.newContext({
       viewport: { width: 720, height: 1280 },
       recordVideo: { dir: rawDir, size: { width: 720, height: 1280 } },
-      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136 Safari/537.36 GamexlabTRVideo/5.3'
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136 Safari/537.36 GamexlabTRVideo/5.4'
     });
     const page = await context.newPage();
     const rawVideoTimelineStart = Date.now();
@@ -640,7 +732,7 @@ async function safeCover(page, surface) {
     });
 
     const captureTarget = await navigateDirectGame(page);
-    console.log(`v5.3 capture target ready: ${captureTarget}`);
+    console.log(`v5.4 capture target ready: ${captureTarget}`);
     console.log(`Provider profile: ${PROVIDER_PROFILE.key}; gameplay pattern: ${GAMEPLAY_PATTERN}`);
 
     const surface = await waitForRealGameplay(context, page, captureTarget);
@@ -661,7 +753,7 @@ async function safeCover(page, surface) {
     fs.copyFileSync(rawVideoPath, path.join(outputDir, 'gameplay.webm'));
 
     fs.writeFileSync(path.join(outputDir, 'metadata.json'), JSON.stringify({
-      engineVersion: '5.3.0',
+      engineVersion: '5.4.0',
       providerProfile: PROVIDER_PROFILE.key,
       gameplayPattern: GAMEPLAY_PATTERN,
       postId: process.env.GAME_POST_ID || null,
@@ -679,7 +771,7 @@ async function safeCover(page, surface) {
       createdAt: new Date().toISOString()
     }, null, 2));
     appendAnalytics({ event: 'capture_complete', provider: GAME_PROVIDER, profile: PROVIDER_PROFILE.key, category: GAME_CATEGORY, pattern: GAMEPLAY_PATTERN, gameTitle: GAME_TITLE, cleanSeconds: gameplay.totalCleanSeconds, segments: gameplay.cleanSegments.length, result: 'PASS' });
-    console.log('v5.3 capture completed successfully.');
+    console.log('v5.4 capture completed successfully.');
   } catch (error) {
     fs.writeFileSync(path.join(outputDir, 'capture-error.txt'), String(error?.stack || error));
     appendAnalytics({ event: 'capture_failed', provider: GAME_PROVIDER, profile: PROVIDER_PROFILE.key, category: GAME_CATEGORY, pattern: GAMEPLAY_PATTERN, gameTitle: GAME_TITLE, result: 'FAIL', error: String(error?.message || error).slice(0,500) });
