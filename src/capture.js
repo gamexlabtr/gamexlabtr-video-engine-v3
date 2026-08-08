@@ -35,6 +35,12 @@ const AD_HINTS = [
   '/ads/', '/ad/', 'advert', 'sponsor', 'rewarded'
 ];
 
+const NON_GAME_HINTS = [
+  'iubenda', 'consent', 'cookie', 'privacy', 'cmp.', '/cmp/', 'onetrust',
+  'quantcast', 'trustarc', 'didomi', 'cookiebot', 'sourcepoint',
+  'iframe_bridge', 'iframe-bridge', 'gdpr', 'ccpa'
+];
+
 const LOADING_SELECTORS = [
   '#unity-loading-bar', '#unity-progress-bar-empty', '#unity-progress-bar-full',
   '#unity-logo', '.unity-loading-bar', '.unity-progress-bar', '.unity-loader',
@@ -63,6 +69,7 @@ function providerScore(url) {
   for (const hint of PROVIDER_HINTS) if (value.includes(hint)) score += 10;
   if (/embed|game|play|index\.html/.test(value)) score += 4;
   for (const hint of AD_HINTS) if (value.includes(hint)) score -= 100;
+  for (const hint of NON_GAME_HINTS) if (value.includes(hint)) score -= 1000;
   return score;
 }
 function isTrustedGameUrl(value) {
@@ -71,6 +78,7 @@ function isTrustedGameUrl(value) {
   if (!host) return false;
   const lower = String(value).toLowerCase();
   if (AD_HINTS.some(h => lower.includes(h))) return false;
+  if (NON_GAME_HINTS.some(h => lower.includes(h))) return false;
 
   const knownHosts = [hostOf(GAME_EMBED_URL), hostOf(GAME_URL)].filter(Boolean);
   for (const known of knownHosts) {
@@ -159,17 +167,48 @@ async function dismissSafeAdControls(page) {
   return false;
 }
 
+async function frameIsMeaningfullyVisible(frame, page) {
+  if (frame === page.mainFrame()) return true;
+  try {
+    const el = await frame.frameElement();
+    const visible = await el.isVisible({ timeout: 250 }).catch(() => false);
+    if (!visible) return false;
+    const box = await el.boundingBox().catch(() => null);
+    return !!box && box.width >= 120 && box.height >= 80;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function visibleAdSignal(page) {
-  const urls = page.frames().map(f => f.url()).filter(Boolean);
-  if (urls.some(u => AD_HINTS.some(h => String(u).toLowerCase().includes(h)))) return true;
+  for (const frame of page.frames()) {
+    const url = String(frame.url() || '').toLowerCase();
+    if (!url || !AD_HINTS.some(h => url.includes(h))) continue;
+    if (await frameIsMeaningfullyVisible(frame, page)) return true;
+  }
 
   const scopes = [page, ...page.frames().filter(f => f !== page.mainFrame())];
   for (const scope of scopes) {
+    if (scope !== page && !(await frameIsMeaningfullyVisible(scope, page))) continue;
+
+    for (const selector of SAFE_AD_DISMISS_SELECTORS) {
+      try {
+        if (await scope.locator(selector).first().isVisible({ timeout: 180 })) return true;
+      } catch (_) {}
+    }
+
     try {
-      const text = (await scope.locator('body').innerText({ timeout: 450 })).slice(0, 3000).toLowerCase();
-      if (PROVIDER_PROFILE.adText.test(text) || /advertisement|skip ad|close ad|ad will close|sponsored|rewarded ad|your ad will end|reklam/.test(text)) return true;
+      const bodyText = (await scope.locator('body').innerText({ timeout: 250 }))
+        .slice(0, 1800)
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+
+      if (/\b(skip ad|close ad|advertisement\s+\d|ad will (end|close)|your ad will end|rewarded ad|reklamı geç|reklam sona)\b/i.test(bodyText)) {
+        return true;
+      }
     } catch (_) {}
   }
+
   return false;
 }
 
@@ -218,7 +257,12 @@ async function discoverEmbedUrl(page) {
     if (url && url !== page.url() && isHttpUrl(url)) candidates.push(url);
   }
   const unique = [...new Set(candidates.filter(isHttpUrl))]
-    .filter(u => !AD_HINTS.some(h => u.toLowerCase().includes(h)));
+    .filter(u => {
+      const lower = u.toLowerCase();
+      if (AD_HINTS.some(h => lower.includes(h))) return false;
+      if (NON_GAME_HINTS.some(h => lower.includes(h))) return false;
+      return providerScore(u) > 0;
+    });
   unique.sort((a, b) => providerScore(b) - providerScore(a));
   return unique[0] || '';
 }
@@ -250,7 +294,10 @@ async function bestGameSurface(page) {
       const box = await el.boundingBox().catch(() => null);
       if (!box || box.width < 200 || box.height < 200) continue;
       const src = await el.getAttribute('src').catch(() => '') || '';
-      if (AD_HINTS.some(h => src.toLowerCase().includes(h))) continue;
+      const lowerSrc = src.toLowerCase();
+      if (AD_HINTS.some(h => lowerSrc.includes(h))) continue;
+      if (NON_GAME_HINTS.some(h => lowerSrc.includes(h))) continue;
+      if (src && providerScore(src) <= 0) continue;
       candidates.push({ box, score: providerScore(src) * 20 + box.width * box.height / 10000, type: 'iframe', src });
     }
   } catch (_) {}
@@ -391,8 +438,7 @@ async function waitForRealGameplay(context, page, captureTarget) {
     if (cleanVotes >= 3 && activityVotes >= 2 &&
         !(await visibleAdSignal(page)) &&
         !(await visibleLoadingSignal(page)) &&
-        !(await hasVisibleStartControl(page)) &&
-        isTrustedGameUrl(page.url())) {
+        !(await hasVisibleStartControl(page))) {
       console.log('Real gameplay accepted after stable readiness checks.');
       return surface.box;
     }
@@ -403,8 +449,9 @@ async function waitForRealGameplay(context, page, captureTarget) {
 }
 
 async function navigateDirectGame(page) {
-  // v4 strongly prefers the exact provider/embed URL from Core.
-  if (GAME_EMBED_URL && isHttpUrl(GAME_EMBED_URL)) {
+  const preferIframeInPlace = PROVIDER_PROFILE.key === 'gamemonetize';
+
+  if (!preferIframeInPlace && GAME_EMBED_URL && isHttpUrl(GAME_EMBED_URL)) {
     console.log(`Opening direct game/embed target: ${GAME_EMBED_URL}`);
     try {
       await page.goto(GAME_EMBED_URL, {
@@ -419,20 +466,34 @@ async function navigateDirectGame(page) {
     }
   }
 
-  if (!GAME_URL) throw new Error('No usable game page for embed discovery.');
-  console.log(`Opening GamexlabTR page only to discover live game iframe: ${GAME_URL}`);
+  if (!GAME_URL) {
+    if (GAME_EMBED_URL && isHttpUrl(GAME_EMBED_URL)) {
+      console.log('No GamexlabTR page available; using embed as last resort.');
+      await page.goto(GAME_EMBED_URL, {
+        waitUntil: 'domcontentloaded', timeout: 90000,
+        referer: 'https://gamexlabtr.com/'
+      });
+      await sleep(PROVIDER_PROFILE.initialWaitMs || 7000);
+      return page.url();
+    }
+    throw new Error('No usable game page for embed discovery.');
+  }
+
+  console.log(`Opening GamexlabTR page in iframe-in-place mode: ${GAME_URL}`);
   await page.goto(GAME_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await sleep(Math.max(4500, (PROVIDER_PROFILE.initialWaitMs || 7000) - 1500));
   await dismissOverlays(page);
 
   const discovered = await discoverEmbedUrl(page);
-  if (!discovered) throw new Error('No trusted game iframe/embed URL could be discovered.');
+  if (discovered) {
+    console.log(`Verified live game iframe candidate: ${discovered}`);
+  } else {
+    console.warn('No external game iframe passed filtering; using visible game surface detection.');
+  }
 
-  console.log(`Discovered game target: ${discovered}`);
-  await page.goto(discovered, { waitUntil: 'domcontentloaded', timeout: 90000, referer: GAME_URL });
-  await sleep(PROVIDER_PROFILE.initialWaitMs || 7000);
-  await dismissOverlays(page);
-  if (!isTrustedGameUrl(page.url())) throw new Error(`Discovered target redirected outside trusted game provider: ${page.url()}`);
+  const surface = await bestGameSurface(page);
+  if (!surface) throw new Error('No usable game surface found on the embedded GamexlabTR page.');
+
   return page.url();
 }
 
@@ -562,7 +623,7 @@ async function safeCover(page, surface) {
     const context = await browser.newContext({
       viewport: { width: 720, height: 1280 },
       recordVideo: { dir: rawDir, size: { width: 720, height: 1280 } },
-      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136 Safari/537.36 GamexlabTRVideo/5.2'
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136 Safari/537.36 GamexlabTRVideo/5.3'
     });
     const page = await context.newPage();
     const rawVideoTimelineStart = Date.now();
@@ -579,7 +640,7 @@ async function safeCover(page, surface) {
     });
 
     const captureTarget = await navigateDirectGame(page);
-    console.log(`v5 capture target ready: ${captureTarget}`);
+    console.log(`v5.3 capture target ready: ${captureTarget}`);
     console.log(`Provider profile: ${PROVIDER_PROFILE.key}; gameplay pattern: ${GAMEPLAY_PATTERN}`);
 
     const surface = await waitForRealGameplay(context, page, captureTarget);
@@ -600,7 +661,7 @@ async function safeCover(page, surface) {
     fs.copyFileSync(rawVideoPath, path.join(outputDir, 'gameplay.webm'));
 
     fs.writeFileSync(path.join(outputDir, 'metadata.json'), JSON.stringify({
-      engineVersion: '5.2.0',
+      engineVersion: '5.3.0',
       providerProfile: PROVIDER_PROFILE.key,
       gameplayPattern: GAMEPLAY_PATTERN,
       postId: process.env.GAME_POST_ID || null,
@@ -618,7 +679,7 @@ async function safeCover(page, surface) {
       createdAt: new Date().toISOString()
     }, null, 2));
     appendAnalytics({ event: 'capture_complete', provider: GAME_PROVIDER, profile: PROVIDER_PROFILE.key, category: GAME_CATEGORY, pattern: GAMEPLAY_PATTERN, gameTitle: GAME_TITLE, cleanSeconds: gameplay.totalCleanSeconds, segments: gameplay.cleanSegments.length, result: 'PASS' });
-    console.log('v5.2 capture completed successfully.');
+    console.log('v5.3 capture completed successfully.');
   } catch (error) {
     fs.writeFileSync(path.join(outputDir, 'capture-error.txt'), String(error?.stack || error));
     appendAnalytics({ event: 'capture_failed', provider: GAME_PROVIDER, profile: PROVIDER_PROFILE.key, category: GAME_CATEGORY, pattern: GAMEPLAY_PATTERN, gameTitle: GAME_TITLE, result: 'FAIL', error: String(error?.message || error).slice(0,500) });
