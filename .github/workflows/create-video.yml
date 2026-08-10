@@ -38,6 +38,26 @@ on:
         required: false
         default: ""
         type: string
+      max_candidates:
+        description: "Bu çalışmada denenecek en fazla oyun"
+        required: true
+        default: "10"
+        type: string
+      attempts_per_game:
+        description: "Oyun başına deneme"
+        required: true
+        default: "2"
+        type: string
+      game_timeout:
+        description: "Oyun hazır olma maksimum süresi (sn)"
+        required: true
+        default: "90"
+        type: string
+      loader_timeout:
+        description: "Loader maksimum bekleme süresi (sn)"
+        required: true
+        default: "35"
+        type: string
 
 permissions:
   contents: read
@@ -59,8 +79,10 @@ jobs:
       INPUT_GAME_PROVIDER: ${{ inputs.provider }}
       RECORD_SECONDS: ${{ inputs.record_seconds }}
       AUTO_SELECTION_MODE: newest
-      MAX_CANDIDATES_PER_RUN: "10"
-      MAX_ATTEMPTS_PER_GAME: "2"
+      MAX_CANDIDATES_PER_RUN: ${{ inputs.max_candidates }}
+      MAX_ATTEMPTS_PER_GAME: ${{ inputs.attempts_per_game }}
+      GAME_TIMEOUT_SECONDS: ${{ inputs.game_timeout }}
+      LOADER_TIMEOUT_SECONDS: ${{ inputs.loader_timeout }}
       GXL_SITE_URL: ${{ secrets.GXL_SITE_URL }}
       GXL_VIDEO_API_TOKEN: ${{ secrets.GXL_VIDEO_API_TOKEN }}
       MAKE_WEBHOOK: ${{ inputs.make_webhook || secrets.MAKE_WEBHOOK }}

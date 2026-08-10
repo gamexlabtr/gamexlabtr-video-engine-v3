@@ -34,3 +34,9 @@ GitHub Actions üzerinde çalışan otomatik oyun video motoru.
 ## Kurulum
 
 ZIP içindeki tüm dosyaları GitHub repo köküne kopyalayın, Replace All yapın, Commit ve Push edin. Actions > Create Game Video > Run workflow ile çalıştırın. Normal otomatik kullanımda manuel oyun alanlarını boş bırakın.
+
+
+## v5.5 Loader Timeout
+- WordPress Video Engine ayarlarından loader timeout ve oyun timeout workflow input olarak aktarılır.
+- Loader kesintisiz olarak limitten uzun görünürse oyun hemen başarısız sayılır ve sıradaki adaya geçilir.
+- Aynı loader mesajı her döngüde spamlanmaz; yaklaşık 5 saniyede bir süre bilgisi yazılır.

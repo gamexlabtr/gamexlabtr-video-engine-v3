@@ -12,6 +12,10 @@ const GAME_CATEGORY = process.env.GAME_CATEGORY || 'Games';
 const GAME_PROVIDER = (process.env.GAME_PROVIDER || 'other').toLowerCase();
 const rawSeconds = Number(process.env.RECORD_SECONDS || 30);
 const RECORD_SECONDS = Math.max(8, Math.min(60, Number.isFinite(rawSeconds) ? rawSeconds : 30));
+const rawLoaderTimeout = Number(process.env.LOADER_TIMEOUT_SECONDS || 35);
+const LOADER_TIMEOUT_SECONDS = Math.max(10, Math.min(120, Number.isFinite(rawLoaderTimeout) ? rawLoaderTimeout : 35));
+const rawGameTimeout = Number(process.env.GAME_TIMEOUT_SECONDS || 90);
+const GAME_TIMEOUT_SECONDS = Math.max(20, Math.min(300, Number.isFinite(rawGameTimeout) ? rawGameTimeout : 90));
 const PROVIDER_PROFILE = detectProviderProfile(GAME_PROVIDER, GAME_EMBED_URL, GAME_URL);
 const GAMEPLAY_PATTERN = gameplayPattern(GAME_CATEGORY);
 
@@ -442,11 +446,32 @@ async function startAcrossFrames(page) {
 }
 
 async function waitForRealGameplay(context, page, captureTarget) {
-  const deadline = Date.now() + (PROVIDER_PROFILE.gameplayReadyTimeoutMs || 90000);
+  const deadline = Date.now() + GAME_TIMEOUT_SECONDS * 1000;
   let attempts = 0;
   let lastSurface = null;
   let cleanVotes = 0;
   let activityVotes = 0;
+  let loaderSince = null;
+  let lastLoaderLogAt = 0;
+
+  const handleLoader = async (label) => {
+    const now = Date.now();
+    if (loaderSince === null) loaderSince = now;
+    const elapsedMs = now - loaderSince;
+    const elapsed = Math.floor(elapsedMs / 1000);
+    if (elapsedMs >= LOADER_TIMEOUT_SECONDS * 1000) {
+      throw new Error(`Loader timeout after ${LOADER_TIMEOUT_SECONDS}s (${label}).`);
+    }
+    if (now - lastLoaderLogAt >= 5000 || lastLoaderLogAt === 0) {
+      console.log(`Loader visible: ${elapsed}/${LOADER_TIMEOUT_SECONDS}s (${label}); waiting...`);
+      lastLoaderLogAt = now;
+    }
+    cleanVotes = 0;
+    activityVotes = 0;
+    await sleep(1200);
+  };
+
+  console.log(`Readiness limits: game=${GAME_TIMEOUT_SECONDS}s loader=${LOADER_TIMEOUT_SECONDS}s`);
 
   while (Date.now() < deadline) {
     await closeUnexpectedPages(context, page);
@@ -454,35 +479,34 @@ async function waitForRealGameplay(context, page, captureTarget) {
     await dismissOverlays(page);
 
     if (await visibleAdSignal(page)) {
+      loaderSince = null;
       cleanVotes = 0;
       activityVotes = 0;
       console.log('Advertisement signal detected; waiting for clean game state...');
       await dismissSafeAdControls(page);
-      await sleep(1800);
+      await sleep(1400);
       continue;
     }
 
     if (await visibleLoadingSignal(page)) {
-      cleanVotes = 0;
-      activityVotes = 0;
-      console.log('Game loader/progress UI is still visible; waiting...');
-      await sleep(1800);
+      await handleLoader('before gameplay');
       continue;
     }
+    loaderSince = null;
 
     const startVisible = await hasVisibleStartControl(page);
     if (startVisible || attempts === 0 || attempts % 4 === 0) {
       await startAcrossFrames(page);
       attempts++;
       cleanVotes = 0;
-      await sleep(Math.max(1800, PROVIDER_PROFILE.postStartWaitMs || 5000));
+      await sleep(Math.max(1500, PROVIDER_PROFILE.postStartWaitMs || 5000));
     }
 
     const surface = await bestGameSurface(page);
     if (!surface) {
       cleanVotes = 0;
       activityVotes = 0;
-      await sleep(1400);
+      await sleep(1000);
       continue;
     }
     lastSurface = surface;
@@ -490,29 +514,24 @@ async function waitForRealGameplay(context, page, captureTarget) {
     if (await hasVisibleStartControl(page)) {
       cleanVotes = 0;
       console.log('START/PLAY is still visible; not accepting as gameplay yet.');
-      await sleep(1400);
-      continue;
-    }
-    if (await visibleLoadingSignal(page)) {
-      cleanVotes = 0;
-      activityVotes = 0;
-      console.log('Loading state returned after START; waiting...');
-      await sleep(1600);
+      await sleep(1000);
       continue;
     }
 
-    // Give the game a harmless input and require repeated visual activity.
+    if (await visibleLoadingSignal(page)) {
+      await handleLoader('after START');
+      continue;
+    }
+    loaderSince = null;
+
     try { await performGameplayAction(page, surface.box, attempts); } catch (_) {}
-    await sleep(700);
+    await sleep(600);
     const activity = await visualActivity(page, surface);
     console.log(`Gameplay readiness: surface=${surface.type} visual=${activity.unique}/${activity.samples} cleanVotes=${cleanVotes} activityVotes=${activityVotes}`);
 
     if (activity.active) activityVotes++; else activityVotes = 0;
     cleanVotes++;
 
-    // Require several consecutive clean observations. A small Unity spinner can
-    // change hashes, but it should still be caught by loader UI/text and will
-    // not pass repeated post-input readiness checks as easily.
     if (cleanVotes >= 3 && activityVotes >= 2 &&
         !(await visibleAdSignal(page)) &&
         !(await visibleLoadingSignal(page)) &&
@@ -520,10 +539,10 @@ async function waitForRealGameplay(context, page, captureTarget) {
       console.log('Real gameplay accepted after stable readiness checks.');
       return surface.box;
     }
-    await sleep(1200);
+    await sleep(900);
   }
 
-  throw new Error(`Real gameplay could not be confirmed within timeout${lastSurface ? ' (surface existed but loading/start/activity checks failed)' : ''}.`);
+  throw new Error(`Game readiness timeout after ${GAME_TIMEOUT_SECONDS}s${lastSurface ? ' (surface existed but readiness checks failed)' : ''}.`);
 }
 
 async function navigateDirectGame(page) {
@@ -627,8 +646,10 @@ async function genericGameplay(context, page, durationMs, surface, captureTarget
   let segmentStart = null;
   let cleanAccumulated = 0;
   let lastTick = Date.now();
-  const hardDeadline = Date.now() + durationMs + 90000;
+  const hardDeadline = Date.now() + durationMs + GAME_TIMEOUT_SECONDS * 1000;
   let i = 0;
+  let loaderSince = null;
+  let lastLoaderLogAt = 0;
 
   const closeSegment = now => {
     if (segmentStart !== null) {
@@ -662,29 +683,46 @@ async function genericGameplay(context, page, durationMs, surface, captureTarget
       continue;
     }
 
-    const dirty = await visibleAdSignal(page) || await visibleLoadingSignal(page) || await hasVisibleStartControl(page);
-    if (dirty) {
+    const adVisible = await visibleAdSignal(page);
+    const loadingVisible = await visibleLoadingSignal(page);
+    const startVisible = await hasVisibleStartControl(page);
+
+    if (adVisible || loadingVisible || startVisible) {
       closeSegment(Date.now());
+      if (loadingVisible) {
+        if (loaderSince === null) loaderSince = Date.now();
+        const elapsedMs = Date.now() - loaderSince;
+        const elapsed = Math.floor(elapsedMs / 1000);
+        if (elapsedMs >= LOADER_TIMEOUT_SECONDS * 1000) {
+          throw new Error(`Loader timeout after ${LOADER_TIMEOUT_SECONDS}s during capture.`);
+        }
+        if (Date.now() - lastLoaderLogAt >= 5000 || lastLoaderLogAt === 0) {
+          console.log(`Loader during capture: ${elapsed}/${LOADER_TIMEOUT_SECONDS}s; pausing clean segment.`);
+          lastLoaderLogAt = Date.now();
+        }
+      } else {
+        loaderSince = null;
+      }
       await dismissSafeAdControls(page);
-      if (await hasVisibleStartControl(page)) await startAcrossFrames(page);
-      if (await visibleLoadingSignal(page)) console.log('Loader appeared during capture; pausing clean segment.');
-      await sleep(1400);
+      if (startVisible) await startAcrossFrames(page);
+      await sleep(1000);
       continue;
     }
+    loaderSince = null;
 
     if (segmentStart === null) segmentStart = Date.now();
     cleanAccumulated += delta;
 
-    try {
-      await performGameplayAction(page, surface, i);
-    } catch (_) {}
-
+    try { await performGameplayAction(page, surface, i); } catch (_) {}
     i++;
     await sleep(360);
   }
 
   closeSegment(Date.now());
-  const totalClean = cleanSegments.reduce((s, x) => s + x.duration, 0);
+  const totalClean = cleanSegments.reduce((sum, item) => sum + item.duration, 0);
+  if (cleanAccumulated < durationMs && Date.now() >= hardDeadline) {
+    throw new Error(`Capture hard timeout after ${GAME_TIMEOUT_SECONDS}s extra wait.`);
+  }
   if (totalClean < Math.max(6, RECORD_SECONDS * 0.65)) {
     throw new Error(`Not enough verified clean gameplay (${totalClean.toFixed(1)}s).`);
   }
@@ -715,7 +753,7 @@ async function safeCover(page, surface) {
     const context = await browser.newContext({
       viewport: { width: 720, height: 1280 },
       recordVideo: { dir: rawDir, size: { width: 720, height: 1280 } },
-      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136 Safari/537.36 GamexlabTRVideo/5.4'
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/136 Safari/537.36 GamexlabTRVideo/5.5'
     });
     const page = await context.newPage();
     const rawVideoTimelineStart = Date.now();
@@ -732,7 +770,7 @@ async function safeCover(page, surface) {
     });
 
     const captureTarget = await navigateDirectGame(page);
-    console.log(`v5.4 capture target ready: ${captureTarget}`);
+    console.log(`v5.5 capture target ready: ${captureTarget}`);
     console.log(`Provider profile: ${PROVIDER_PROFILE.key}; gameplay pattern: ${GAMEPLAY_PATTERN}`);
 
     const surface = await waitForRealGameplay(context, page, captureTarget);
@@ -753,7 +791,7 @@ async function safeCover(page, surface) {
     fs.copyFileSync(rawVideoPath, path.join(outputDir, 'gameplay.webm'));
 
     fs.writeFileSync(path.join(outputDir, 'metadata.json'), JSON.stringify({
-      engineVersion: '5.4.0',
+      engineVersion: '5.5.0',
       providerProfile: PROVIDER_PROFILE.key,
       gameplayPattern: GAMEPLAY_PATTERN,
       postId: process.env.GAME_POST_ID || null,
@@ -765,13 +803,15 @@ async function safeCover(page, surface) {
       category: GAME_CATEGORY,
       provider: GAME_PROVIDER,
       recordSeconds: RECORD_SECONDS,
+      loaderTimeoutSeconds: LOADER_TIMEOUT_SECONDS,
+      gameTimeoutSeconds: GAME_TIMEOUT_SECONDS,
       gameplayStartOffsetSeconds,
       cleanSegments: gameplay.cleanSegments,
       verifiedCleanGameplaySeconds: gameplay.totalCleanSeconds,
       createdAt: new Date().toISOString()
     }, null, 2));
     appendAnalytics({ event: 'capture_complete', provider: GAME_PROVIDER, profile: PROVIDER_PROFILE.key, category: GAME_CATEGORY, pattern: GAMEPLAY_PATTERN, gameTitle: GAME_TITLE, cleanSeconds: gameplay.totalCleanSeconds, segments: gameplay.cleanSegments.length, result: 'PASS' });
-    console.log('v5.4 capture completed successfully.');
+    console.log('v5.5 capture completed successfully.');
   } catch (error) {
     fs.writeFileSync(path.join(outputDir, 'capture-error.txt'), String(error?.stack || error));
     appendAnalytics({ event: 'capture_failed', provider: GAME_PROVIDER, profile: PROVIDER_PROFILE.key, category: GAME_CATEGORY, pattern: GAMEPLAY_PATTERN, gameTitle: GAME_TITLE, result: 'FAIL', error: String(error?.message || error).slice(0,500) });

@@ -1,6 +1,6 @@
 {
   "name": "gamexlabtr-video-engine",
-  "version": "5.2.0",
+  "version": "5.5.0",
   "private": true,
   "description": "GamexlabTR Video Engine v5.2: provider QA, two attempts per game, up to ten candidates per run, automatic fallback, TR+EN social automation and analytics.",
   "type": "commonjs",
