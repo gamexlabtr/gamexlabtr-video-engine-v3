@@ -4,88 +4,52 @@ on:
   workflow_dispatch:
     inputs:
       game_url:
-        description: "Opsiyonel manuel test URL'si (normalde boş bırak)"
-        required: false
-        default: ""
-        type: string
-      game_embed_url:
-        description: "Opsiyonel manuel embed/iframe URL"
-        required: false
-        default: ""
+        description: "GamexlabTR oyun sayfasi URL'si"
+        required: true
         type: string
       game_title:
-        description: "Opsiyonel manuel oyun adı"
-        required: false
-        default: ""
+        description: "Videoda gorunecek oyun adi"
+        required: true
+        default: "New HTML5 Game"
         type: string
       category:
-        description: "Opsiyonel manuel kategori"
+        description: "Oyun kategorisi"
         required: false
-        default: ""
-        type: string
-      provider:
-        description: "Opsiyonel manuel sağlayıcı"
-        required: false
-        default: ""
+        default: "HTML5 Games"
         type: string
       record_seconds:
-        description: "Oynanış kayıt süresi (8-60)"
+        description: "Oynanis kayit suresi (8-60)"
         required: true
         default: "30"
         type: string
+      language:
+        description: "Sosyal medya dili"
+        required: true
+        default: "en"
+        type: choice
+        options:
+          - en
+          - tr
       make_webhook:
         description: "Opsiyonel Make webhook URL"
         required: false
-        default: ""
-        type: string
-      max_candidates:
-        description: "Bu çalışmada denenecek en fazla oyun"
-        required: true
-        default: "10"
-        type: string
-      attempts_per_game:
-        description: "Oyun başına deneme"
-        required: true
-        default: "2"
-        type: string
-      game_timeout:
-        description: "Oyun hazır olma maksimum süresi (sn)"
-        required: true
-        default: "90"
-        type: string
-      loader_timeout:
-        description: "Loader maksimum bekleme süresi (sn)"
-        required: true
-        default: "35"
         type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: gamexlabtr-video-engine
-  cancel-in-progress: false
-
 jobs:
   create-video:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
 
     env:
-      INPUT_GAME_URL: ${{ inputs.game_url }}
-      INPUT_GAME_EMBED_URL: ${{ inputs.game_embed_url }}
-      INPUT_GAME_TITLE: ${{ inputs.game_title }}
-      INPUT_GAME_CATEGORY: ${{ inputs.category }}
-      INPUT_GAME_PROVIDER: ${{ inputs.provider }}
+      GAME_URL: ${{ inputs.game_url }}
+      GAME_TITLE: ${{ inputs.game_title }}
+      GAME_CATEGORY: ${{ inputs.category }}
       RECORD_SECONDS: ${{ inputs.record_seconds }}
-      AUTO_SELECTION_MODE: newest
-      MAX_CANDIDATES_PER_RUN: ${{ inputs.max_candidates }}
-      MAX_ATTEMPTS_PER_GAME: ${{ inputs.attempts_per_game }}
-      GAME_TIMEOUT_SECONDS: ${{ inputs.game_timeout }}
-      LOADER_TIMEOUT_SECONDS: ${{ inputs.loader_timeout }}
-      GXL_SITE_URL: ${{ secrets.GXL_SITE_URL }}
-      GXL_VIDEO_API_TOKEN: ${{ secrets.GXL_VIDEO_API_TOKEN }}
-      MAKE_WEBHOOK: ${{ inputs.make_webhook || secrets.MAKE_WEBHOOK }}
+      SOCIAL_LANGUAGE: ${{ inputs.language }}
+      MAKE_WEBHOOK: ${{ inputs.make_webhook }}
 
     steps:
       - name: Checkout
@@ -99,6 +63,15 @@ jobs:
       - name: Install npm packages
         run: npm install
 
+      - name: Install Chromium dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2t64 \
+            libatk-bridge2.0-0 \
+            libatspi2.0-0 \
+            libxkbcommon0
+
       - name: Install Chromium
         run: npx playwright install chromium
 
@@ -110,26 +83,23 @@ jobs:
       - name: Verify FFmpeg
         run: ffmpeg -version
 
-      - name: Automatic video cycle
-        run: bash scripts/run-cycle.sh
+      - name: Capture gameplay
+        run: npm run capture
+
+      - name: Render vertical video
+        run: npm run render
+
+      - name: Prepare social package
+        run: npm run social
 
       - name: Upload result
-        if: success() && env.GXL_NO_GAME != '1'
         uses: actions/upload-artifact@v4
         with:
-          name: gamexlabtr-video-${{ github.run_number }}
+          name: gamexlabtr-video
           path: |
             output/gamexlabtr-final.mp4
             output/cover.png
             output/metadata.json
             output/social.json
-            output/selection.json
-            output/quality.json
-            output/analytics/latest.json
-            output/analytics/video-engine.jsonl
           if-no-files-found: error
           retention-days: 7
-
-      - name: Notify Make after artifact is ready
-        if: success() && env.GXL_NO_GAME != '1'
-        run: npm run notify
